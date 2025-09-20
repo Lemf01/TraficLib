@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Naolib - Horaires et carte</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<style>
+  body {margin:0; font-family: system-ui, Arial, sans-serif; background:#f4f4f9;}
+  header {padding:15px; background:#00c00d; color:white; text-align:center;}
+  header h1 {margin:0; font-size:24px;}
+  #controls {padding:12px; background:#fff; display:flex; justify-content:center; gap:10px; box-shadow:0 2px 4px rgba(0,0,0,0.1);}
+  #controls input {padding:8px; flex:1; border-radius:5px; border:1px solid #ccc;}
+  #controls button {padding:8px 16px; border:none; border-radius:5px; background:#00c00d; color:white; cursor:pointer; display:flex; align-items:center; gap:5px;}
+  #controls button:hover {background:#00c00d;}
+  #main {display:flex; height:75vh;}
+  #map {flex:2;}
+  #sidebar {flex:1; overflow-y:auto; padding:12px; background:#fff; box-shadow:-2px 0 4px rgba(0,0,0,0.05);}
+  .stop {border:1px solid #ddd; padding:10px; margin-bottom:10px; border-radius:8px; background:white; box-shadow:0 1px 3px rgba(0,0,0,0.05);}
+  .line {font-weight:700; color:#0070c0;}
+  .eta {margin-top:6px; font-size:14px; color:#333;}
+  .hint {font-size:12px; color:#666;}
+  ul {padding-left:18px; margin:0;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Naolib — Horaires et carte</h1>
+  <p>Recherchez un arrêt et cliquez sur la carte pour voir les prochains passages</p>
+</header>
+
+<div id="controls">
+  <input id="locInput" placeholder="Nom d'arrêt" />
+  <button id="searchBtn">🔍 Chercher</button>
+  <button id="locBtn">📍 Ma position</button>
+</div>
+
+<div id="main">
+  <div id="map"></div>
+  <div id="sidebar">
+    <h2>Résultats</h2>
+    <div id="results"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.3.2/papaparse.min.js"></script>
+
+<script>
+  // 1️⃣ CSV - Copier-coller tes données ici
+  const stopsCsv = `stop_id,stop_name,stop_lat,stop_lon
+COMM,Commerce,47.213,-1.554
+GARE,"Gare SNCF",47.207,-1.556
+STAP,Stapel,47.220,-1.560
+`;
+
+  const routesCsv = `route_id,route_short_name,route_type
+T1,T1,tram
+C1,C1,bus
+C3,C3,bus
+`;
+
+  const tripsCsv = `trip_id,route_id,trip_headsign
+T1-1,T1,François Mitterrand
+C1-1,C1,Chantenay
+C3-1,C3,Porte de Vertou
+`;
+
+  const stopTimesCsv = `trip_id,stop_id,arrival_time
+T1-1,COMM,08:02:00
+C1-1,COMM,08:05:00
+C3-1,STAP,08:06:00
+`;
+
+  // 2️⃣ Parser CSV et supprimer lignes vides
+  function parseCsv(csv){ 
+    return Papa.parse(csv.trim(), {header:true})
+      .data.filter(d => d.stop_id || d.route_id || d.trip_id); 
+  }
+
+  const stops = parseCsv(stopsCsv);
+  const routes = parseCsv(routesCsv);
+  const trips = parseCsv(tripsCsv);
+  const stop_times = parseCsv(stopTimesCsv);
+
+  // 3️⃣ Fonctions utilitaires
+  function getLineIcon(line){
+    line = line.toUpperCase();
+    if(line.startsWith('T')) return '🚋';
+    if(line.startsWith('C')) return '🚍';
+    return '🚌';
+  }
+
+  function escapeHtml(s){ 
+    return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // 4️⃣ Carte Leaflet
+  const map = L.map('map').setView([47.2184,-1.5536],13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    attribution:'© OpenStreetMap contributors'
+  }).addTo(map);
+
+  let stopLayer;
+
+  function displayStops(stopsData){
+    if(stopLayer) map.removeLayer(stopLayer);
+    stopLayer = L.layerGroup().addTo(map);
+    const $results = document.getElementById('results');
+    $results.innerHTML='';
+
+    stopsData.forEach(stop=>{
+      const marker = L.marker([stop.stop_lat, stop.stop_lon]).addTo(stopLayer);
+      marker.bindPopup(`<strong>${escapeHtml(stop.stop_name)}</strong><br><em>Chargement...</em>`);
+      marker.on("click", ()=> showTimesPopup(marker, stop.stop_id, stop.stop_name));
+
+      const div = document.createElement('div');
+      div.className='stop';
+      div.innerHTML=`<div><strong>${escapeHtml(stop.stop_name)}</strong> <span class="hint">[id:${stop.stop_id}]</span></div>
+        <button data-stop="${stop.stop_id}">⏱ Voir prochains passages</button>
+        <div class="eta" data-eta-for="${stop.stop_id}"></div>`;
+      $results.appendChild(div);
+      div.querySelector('button').addEventListener('click', ()=> showTimesDiv(stop.stop_id, div.querySelector('.eta')));
+    });
+  }
+
+  // 5️⃣ Affichage horaires
+  function showTimesDiv(stopId, $etaDiv){
+    const times = stop_times
+      .filter(st=>st.stop_id===stopId)
+      .map(st=>{
+        const trip = trips.find(t=>t.trip_id===st.trip_id);
+        const route = routes.find(r=>r.route_id===trip.route_id);
+        return {line:route.route_short_name, destination:trip.trip_headsign, time:st.arrival_time};
+      });
+    if(times.length===0){ $etaDiv.innerHTML='<div class="hint">Aucune info</div>'; return; }
+    let html='<ul>';
+    times.forEach(t=>{
+      html+=`<li>${getLineIcon(t.line)} <span class="line">${escapeHtml(t.line)}</span> → ${escapeHtml(t.destination)} <span class="hint">(${escapeHtml(t.time)})</span></li>`;
+    });
+    html+='</ul>';
+    $etaDiv.innerHTML=html;
+  }
+
+  function showTimesPopup(marker, stopId, stopName){
+    const times = stop_times
+      .filter(st=>st.stop_id===stopId)
+      .map(st=>{
+        const trip = trips.find(t=>t.trip_id===st.trip_id);
+        const route = routes.find(r=>r.route_id===trip.route_id);
+        return {line:route.route_short_name, destination:trip.trip_headsign, time:st.arrival_time};
+      });
+    let html=`<strong>${escapeHtml(stopName)}</strong>`;
+    if(times.length===0){ html+='<br><span class="hint">Aucune info</span>'; }
+    else{
+      html+='<ul>';
+      times.forEach(t=>{
+        html+=`<li>${getLineIcon(t.line)} <span class="line">${escapeHtml(t.line)}</span> → ${escapeHtml(t.destination)} <span class="hint">(${escapeHtml(t.time)})</span></li>`;
+      });
+      html+='</ul>';
+    }
+    marker.setPopupContent(html);
+    marker.openPopup();
+  }
+
+  // 6️⃣ Recherche
+  document.getElementById('searchBtn').addEventListener('click',()=>{
+    const q = document.getElementById('locInput').value.trim().toLowerCase();
+    if(!q) displayStops(stops);
+    else displayStops(stops.filter(s=>s.stop_name.toLowerCase().includes(q)));
+  });
+
+  // 7️⃣ Localisation
+  document.getElementById('locBtn').addEventListener('click', ()=>{
+    if(navigator.geolocation){
+      navigator.geolocation.getCurrentPosition(pos=>{
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        map.setView([lat, lon],15);
+        L.circle([lat, lon], {radius:30, color:'#0070c0'}).addTo(map)
+          .bindPopup('Vous êtes ici').openPopup();
+      }, ()=>alert('Impossible de récupérer votre position'));
+    } else { alert('Géolocalisation non supportée'); }
+  });
+
+  // 8️⃣ Initialisation
+  displayStops(stops);
+
+</script>
+</body>
+</html>
+
