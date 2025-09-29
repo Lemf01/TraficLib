@@ -74,6 +74,14 @@
         margin: 6px 0 0 18px;
         padding: 0;
       }
+      footer {
+        background: #f4f5f8;
+        text-align: center;
+        padding: 12px;
+        font-size: 14px;
+        color: #555;
+        border-top: 1px solid #ddd;
+      }
     </style>
   </head>
   <body>
@@ -98,9 +106,6 @@
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
     <script>
       (async () => {
-        /* ===========================
-        I — DONNÉES MOCK (exemple)
-      =========================== */
         const stops = await new Promise(async (resolve) => {
           const response = await fetch(
             "https://data.nantesmetropole.fr/api/explore/v2.1/catalog/datasets/244400404_tan-arrets/exports/json?lang=fr&timezone=Europe%2FBerlin"
@@ -118,9 +123,6 @@
           );
         });
 
-        /* ===========================
-        IV — CARTE
-      =========================== */
         const map = L.map("map").setView([47.2184, -1.5536], 13);
         L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(
           map
@@ -148,12 +150,8 @@
           });
         }
 
-        /* ===========================
-        V — HORAIRES
-      =========================== */
         async function showTimesDiv(stopId, el) {
           el.innerHTML = "Chargement ...";
-
           const response = await fetch(
             "https://open.tan.fr/ewp/tempsattente.json/" + stopId
           );
@@ -163,7 +161,7 @@
           for (const dep of data) {
             const field = fields.find(
               (f) =>
-                f.line == dep.ligne.numLigne && dep.terminus == dep.terminus
+                f.line == dep.ligne.numLigne && f.terminus == dep.terminus
             );
             if (field) {
               if (dep.temps) {
@@ -235,14 +233,14 @@
               } else {
                 for (const dep of field.times) {
                   const d = document.createElement("div");
-                  d.innerText = dep.time + "mn";
+                  d.innerText =
+                    dep.time === 0 ? "⏱ Proche" : dep.time + "mn";
                   if (!dep.isRealTime) {
                     d.innerText += "'";
                   }
                   if (dep.isLast) {
                     d.innerText += " (dernier)";
                   }
-
                   times.appendChild(d);
                 }
               }
@@ -256,9 +254,6 @@
           }
         }
 
-        /* ===========================
-        VI — RECHERCHE ET LOCALISATION
-      =========================== */
         document.getElementById("searchBtn").addEventListener("click", () => {
           const q = document.getElementById("locInput").value.toLowerCase();
           if (!q) {
@@ -289,11 +284,12 @@
           });
         });
 
-        /* ===========================
-        VII — INIT
-      =========================== */
         displayStopsOnMap(stops);
       })();
     </script>
+
+    <footer>
+      🚋 Merci d'utiliser <strong>TraficLib !</strong> – développé par Le_mf01. Remerciements à Simon.l pour son aide ! Crée en septembre 2025.
+    </footer>
   </body>
 </html>
